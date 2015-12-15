@@ -1,0 +1,515 @@
+#!/bin/bash
+
+# Copyright (c) 2015, Ryan V. Bissell.  All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+#  * Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+#  * Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS ``AS IS'' AND ANY
+# EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+# PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+# CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+# EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+# PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+# PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
+# OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+# be strict about uninitialized variables
+set -o nounset
+
+if [ "$_" == "$0" ]; then
+  echo "This script must be sourced." 1>&2
+  echo "This script is not intended for direct usage by humans." 1>&2
+  exit 1
+fi
+
+# this must be defined; its absence may indicate ignorance.
+if [ -z ${RVBDIR+x} ] || [ -z $RVBDIR ]; then
+  echo "This script is not intended for direct usage by humans." >&2
+  exit 1
+fi
+
+OFF=$'\e[m'
+RED=$'\e[1;31m'
+BLUE=$'\e[1;34m'
+CYAN=$'\e[1;36m'
+GREEN=$'\e[1;32m'
+PURPLE=$'\e[1;35m'
+YELLOW=$'\e[1;33m'
+WHITE=$'\e[1;37m'
+
+COLOR_NORMAL=${WHITE}
+COLOR_DEBUG=${BLUE}
+COLOR_NOTICE=${CYAN}
+COLOR_ERROR=${RED}
+COLOR_ECHO=${COLOR_NORMAL}
+COLOR_PROMPT=${COLOR_NOTICE}
+COLOR_TRACE=${COLOR_DEBUG}
+
+echo -e "${OFF}"
+
+# alias RVBTRACE= and all non-negative values to RVBTRACE=255
+# alias negative values to their absolute values
+if [ -n "${RVBTRACE+x}" ]; then # is it defined?
+  if [ -z "$RVBTRACE" ] || ! [[ $RVBTRACE =~ ^-?[0-9]+$ ]]; then
+    echo "RVBTRACE must be set to a decimal integer.  Please see --help" >&2
+    exit 1
+  elif (( RVBTRACE >= 0 )); then
+    RVBTRACE=255;
+  elif (( RVBTRACE < 0 )); then
+    RVBTRACE=`(( _abs = $RVBTRACE<0 ? $RVBTRACE*-1 : $RVBTRACE )); echo $_abs`
+  fi
+fi
+
+# convert an unset RVBDEBUG to an empty RVBDEBUG
+if [ -z ${RVBDEBUG+x} ]; then
+  RVBDEBUG=
+# normalize a set RVBDEBUG=0 to empty
+elif [ -n "$RVBDEBUG" ] && [ $RVBDEBUG -le 0 ]; then
+  RVBDEBUG=
+  # note that it would be fruitless to use rvb_debug for this output...
+  # and in any case, that function is not yet defined anyway
+  echo -e "${COLOR_NOTICE}RVBDEBUG was set, but <= zero; normalizing to empty${OFF}"
+fi
+
+
+RVB_TRACE_DEPTH=0
+rvb_trace_in ()
+{
+  # we let RVB_TRACE_DEPTH get larger than RVBTRACE, however here and
+  # elsewhere we clamp its interpretation to the magnitude of RVBTRACE.
+  if [ -n "${RVBTRACE+x}" ]; then # can't use "rvb_is_defined" here (recursion)
+    local _out=">> ${FUNCNAME[1]}"
+    (( $# >= 1 )) && _out="$_out ($1)" # allow parenthetical comment
+    [ -n "$RVBTRACE" ] && (( RVB_TRACE_DEPTH < RVBTRACE )) && _rvb_colorprint COLOR_TRACE $_out
+    if ((RVB_TRACE_DEPTH < 255)); then
+      ((RVB_TRACE_DEPTH++))
+    fi
+  fi
+}
+
+
+rvb_trace_out__no_ret ()
+{
+  if [ -n "${RVBTRACE+x}" ]; then # can't use "rvb_is_defined" here
+    if ((RVB_TRACE_DEPTH > 0)); then
+      ((RVB_TRACE_DEPTH--))
+    fi
+  fi
+}
+
+
+rvb_trace_out ()
+{
+  local _ret=$?
+  rvb_trace_out__no_ret
+  return $_ret
+}
+
+
+rvb_tolower ()
+{
+  # can't use rvb_trace here, because of meaningful output.
+  #echo $1 | tr '[:upper:]' '[:lower:]'
+  echo ${1,,}
+}
+
+
+rvb_dirname ()
+{
+  # this is used to find .incl files when our
+  # bash scripts were invoked via a symlink
+  local _canon=`readlink -f $1`
+  local _dir=`dirname $_canon`
+  echo $_dir
+}
+
+
+rvb_fqpn ()
+{
+  # unlike "cd $1 && pwd", readlink works for non-existent files
+  # but readlink cannot handle substitution of '~' with $HOME
+  local _path=$1
+  _path=${_path/#~/$HOME}
+  echo `readlink -m $_path`
+  return 0
+}
+
+
+rvb_abs ()
+{
+  local _abs
+
+  (( _abs = $1<0 ? $1*-1 : $1 ))
+  echo $_abs
+}
+
+
+rvb_min ()
+{
+  local _ret
+
+  (( _ret = $1 < $2 ? $1 : $2 ))
+  echo $_ret
+}
+
+
+_rvb_print ()
+{
+  # unconditional, trace-indented print.
+  # not intended for direct use outside of this file.
+
+  if [ -n "${RVBTRACE+x}" ]; then
+    local _depth=`rvb_min $RVBTRACE $RVB_TRACE_DEPTH`
+    [ -n "$RVBTRACE" ] && for((i=1;i<=$_depth;i++));do printf "%s" " ";done
+  fi
+  echo -e "$@"
+}
+
+
+_rvb_colorprint ()
+{
+  # unconditional, trace-indented print.
+  # not intended for direct use outside of this file.
+
+  local _color=${!1}
+  shift
+  local _text=$@
+
+  _rvb_print "${_color}${_text}${OFF}"
+}
+
+
+rvb_show ()
+{
+  # this only outputs if '--show' was given.
+  if [ -n "$RVBOPT_SHOW" ]; then
+    _rvb_print "$@"
+  fi
+}
+
+
+rvb_echo ()
+{
+  if [ -z "$RVBOPT_SHOW" ]; then
+    _rvb_colorprint COLOR_ECHO "$@"
+  fi
+}
+
+
+rvb_error ()
+{
+  >&2 _rvb_colorprint COLOR_ERROR "ERROR: $@" >&2
+}
+
+
+rvb_notice ()
+{
+  _rvb_colorprint COLOR_NOTICE "$@"
+}
+
+
+rvb_debug ()
+{
+  local _dlevel=$1
+  shift
+
+  if [ -n "$RVBDEBUG" ] && [ $_dlevel -le $RVBDEBUG ]; then
+    local _prefix="R:"
+    if [ $_dlevel -eq 2 ]; then
+      _prefix="V:"
+    elif [ $_dlevel -ge 2 ]; then
+      _prefix="D:"
+    fi
+    _rvb_colorprint COLOR_DEBUG "$_prefix $@"
+  fi
+}
+
+
+rvb_verbose ()
+{
+  rvb_debug 2 $@
+}
+
+
+rvb_delay ()
+{
+  local _count=$1
+  while [ $_count -gt 0 ]; do
+    echo -ne "*** Continuing in $_count...        \r"
+    _count=$(( _count - 1 ))
+    sleep 1
+  done
+}
+
+
+rvb_pause ()
+{
+  echo "Press any key to continue..."
+  read -n 1
+}
+
+
+rvb_confirm ()
+{
+  local _question=$1
+  local _response
+
+  echo -e "${COLOR_PROMPT}"
+  _rvb_print "$_question"
+  read -e -r -p " [y/N] " _response
+  echo -e "${OFF}"
+  _response=`rvb_tolower $_response`
+  [[ $_response =~ ^(y|ye|yes)$ ]]
+}
+
+
+rvb_run ()
+{
+  rvb_trace_in
+
+  # rvb_run() will only run if '--show' was not given.
+  # For a version that still shows during '--show', see nvbuild_run
+  if [ -n "$RVBOPT_SHOW" ]; then
+    rvb_trace_out
+    return
+  fi
+
+  local _cmd=($@)
+
+  # RVBDEBUG indicates someone is debugging this script.
+  if [ -n "$RVBDEBUG" ]; then
+    rvb_debug 1 "'${_cmd[@]}'" >/dev/tty
+  fi
+
+  # rvb_run() gaurantees exit on command failure
+  eval "${_cmd[@]}" || exit 1
+
+  rvb_trace_out
+}
+
+
+
+rvb_is_number ()
+{
+  rvb_trace_in $1
+
+  local _re='^-?[0-9]+$'
+  [[ $1 =~ $_re ]]
+
+  rvb_trace_out
+}
+
+
+rvb_is_function ()
+{
+  rvb_trace_in $1
+
+  # http://stackoverflow.com/questions/85880/determine-if-a-function-exists-in-bash
+  typeset _type="`type -t $1`"
+  [ "$_type" == "function" ]
+
+  rvb_trace_out
+}
+
+
+rvb_is_undefined ()
+{
+  rvb_trace_in $1
+
+  # aka "unset" (not to be confused with "set to nothing")
+  [ -z "${!1+x}" ]
+
+  rvb_trace_out
+}
+
+
+rvb_is_defined ()
+{
+  rvb_trace_in $1
+
+  [ -n "${!1+x}" ]
+
+  rvb_trace_out
+}
+
+
+rvb_is_empty ()
+{
+  rvb_trace_in $1
+
+  # empty still counts as defined
+  [ -n "${!1+x}" ] && [ -z "${!1}" ]
+
+  rvb_trace_out
+}
+
+
+rvb_is_unempty ()
+{
+  rvb_trace_in $1
+
+  # unempty implies defined
+  [ -n "${!1+x}" ] && [ -n "${!1}" ]
+
+  rvb_trace_out
+}
+
+
+declare -A RVBOPTDEFS
+rvb_cmdline_register_option_handler ()
+{
+  rvb_trace_in
+
+  if [ $# -ne 2 ]; then
+    rvb_error "Invalid number of arguments passed to ${FUNCNAME[0]}."
+    exit 1
+  fi
+
+  if ! rvb_is_function "$2" ; then
+    rvb_error "${FUNCNAME[0]}: \$2 needs to be a bash function."
+    exit 1
+  fi
+
+  rvb_debug 3 "Registering '$2' as handler for option '$1'"
+  RVBOPTDEFS[$1]=$2
+
+  rvb_trace_out
+}
+
+
+rvb_cmdline_register_params_handler ()
+{
+  rvb_trace_in
+
+  if [ $# -ne 1 ]; then
+    rvb_error "Invalid number of arguments passed to ${FUNCNAME[0]}."
+    exit 1
+  fi
+
+  if ! rvb_is_function "$1" ; then
+    rvb_error "${FUNCNAME[0]}: \$1 needs to be a bash function."
+    exit 1
+  fi
+
+  RVB_CMDLINE_PARAMS_HANDLER=$1
+  rvb_debug 3 "'$RVB_CMDLINE_PARAMS_HANDLER' has been registered."
+
+  rvb_trace_out
+}
+
+
+rvb_cmdline_process_args ()
+{
+  rvb_trace_in
+
+  # Interestingly, it seems that a declared array that is otherwise
+  # empty is treated by "${array+foo}" as though it is itself unset...
+  # But contrarywise, 'set -o nounset' doesn't complain about it.
+  declare -a _params=()
+
+  _rvb_cmdline_process_option ()
+  {
+    rvb_trace_in
+
+    # we rely on the calling parent function's '_option' and '_optarg' vars
+
+    rvb_debug 3 "_option is '$_option'"
+    rvb_debug 3 "_optarg is '$_optarg'"
+
+    if rvb_is_undefined RVBOPTDEFS[$_option]; then
+      rvb_trace_out
+      return 1
+    fi
+    local _handler=${RVBOPTDEFS[$_option]}
+
+    $_handler $_option $_optarg
+
+    rvb_trace_out
+  }
+
+  _rvb_cmdline_process_params ()
+  {
+    rvb_trace_in
+
+    # we rely on the caller's local '_params' array
+
+    if rvb_is_undefined RVB_CMDLINE_PARAMS_HANDLER ; then
+      rvb_error "Internal error-- need to call rvb_cmdline_register_params_handler."
+      exit 1
+    fi
+
+    local _expand="${_params[@]:+${_params[@]}}"
+    rvb_debug 3 "Calling registered params handler with positional arguments '$_expand'"
+    $RVB_CMDLINE_PARAMS_HANDLER $_expand
+
+    rvb_trace_out
+  }
+
+  local _option
+  local _optarg
+
+  local _count=$#
+  rvb_debug 3 "Argument count is $_count"
+  while (( "$#" )); do
+
+    rvb_debug 3 "argv[$(expr $_count - $#)] is '$1'"
+
+    case "$1" in
+      --*)
+        _option=`expr "x$1" : 'x\([^=]*\)=*.*'`
+        _optarg=`expr "x$1" : 'x[^=]*=\(.*\)'`
+        if ! _rvb_cmdline_process_option; then
+          rvb_error "Bad option '$_option' given; see --help for instructions."
+          exit 1
+        fi
+        ;;
+      *)
+        # assume this is a positional argument (aka param)
+        _params[${#_params[@]}]=$1
+        ;;
+    esac
+    shift
+  done
+
+  rvb_debug 3 "_params is '${_params[@]:+${_params[@]}}'"
+
+  _rvb_cmdline_process_params
+
+  rvb_trace_out
+}
+
+
+rvb_get_functions ()
+{
+  local _regexp=$1
+  local _funcs=`declare -F | grep $_regexp |
+                       while read -r line; do
+                         echo ${line##* };  # get last column
+                       done`
+  echo $_funcs
+}
+
+
+rvb_delete_functions ()
+{
+  local _regexp='[_]*rvb_.*'
+
+  local _funcs=`rvb_get_functions $_regexp`
+  _funcs=($_funcs) # array-ize
+  for _func in ${_funcs[@]}; do
+    unset -f $_func
+  done
+}
+
+

@@ -1,0 +1,245 @@
+#!/bin/bash
+
+# Copyright (c) 2015, Ryan V. Bissell.  All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+#  * Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+#  * Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS ``AS IS'' AND ANY
+# EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+# PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+# CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+# EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+# PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+# PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
+# OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+called=$_
+
+# strict
+set -o nounset
+
+if [ "$called" == "$0" ]; then
+  echo "This script must be sourced." 1>&2
+  exit 1
+fi
+
+sourced_exit ()
+{
+  kill -INT $$
+}
+
+# necessary for scripts sourced from the shell
+called=$BASH_SOURCE
+echo "Called is '$called'"
+
+# need this earlier than source of rvb-common.incl
+rvb_dirname ()
+{
+  # this is used to find .incl files when our
+  # bash scripts were invoked via a symlink
+  local _canon=`readlink -f $1`
+  local _dir=`dirname $_canon`
+  echo $_dir
+}
+
+RVBPROG=`basename $called`
+RVBDIR=$(cd $(rvb_dirname "$called"); pwd)
+
+source "${RVBDIR}/rvb-common.incl"
+
+
+
+# option defaults
+MYOPT_HOST=x86_64
+myndk_option__host ()
+{
+  rvb_trace_in
+
+  # $1 should be '--host', but since this function isn't
+  # used for multiple options, we won't bother confirming that.
+
+  if (( $# != 2 )); then
+    rvb_error "Host type required with --host."
+    rvb_error "Supported values are 'x86_64' (default) and 'x86'."
+    sourced_exit
+  fi
+
+  MYOPT_HOST=$2
+  rvb_verbose "Command-line overrides --host as '$MYOPT_HOST'"
+
+  rvb_trace_out
+}
+
+
+myndk_option__target ()
+{
+  rvb_trace_in
+
+  # $1 should be '--target', but since this function isn't
+  # used for multiple options, we won't bother confirming that.
+
+  if (( $# != 2 )); then
+    rvb_error "Host type required with --target."
+    rvb_error "Supported values are '32' and '64' (default)."
+    # TODO: later, make the default match uname.
+    sourced_exit
+  fi
+
+  MYOPT_TARGET=$2
+  rvb_verbose "Command-line sets --target as '$MYOPT_TARGET'"
+
+  rvb_trace_out
+}
+
+
+myndk_explain_usage ()
+{
+  rvb_trace_in
+
+  rvb_error "USAGE: myndk r## [--host=(x86|x86_64)]"
+  sourced_exit
+
+  rvb_trace_out
+}
+
+
+myndk_process_params ()
+{
+  rvb_trace_in
+
+  local _count=$#
+
+   if (( _count != 1 )); then
+    rvb_error "This script takes exactly one positional argument."
+    myndk_explain_usage
+    sourced_exit
+  fi
+
+  MYNDK_REVISION=$1
+  rvb_verbose "NDK revision is '$MYNDK_REVISION'"
+
+  rvb_trace_out
+}
+
+
+myndk_validate_params ()
+{
+  rvb_trace_in
+
+  # at first, only support r10 and newer.
+
+  # verify the NDK archive exists
+  local _ndkname=android-ndk-$MYNDK_REVISION
+  local _filename=$_ndkname-linux-$MYOPT_HOST.bin
+  local _cache=$HOME/.myndk
+  local _ftpmirror=ftp://smt-build/android/ndk/linux
+  local _google=http://dl.google.com/android/ndk
+
+  if [ ! -e "$_cache/$_filename" ]; then
+     echo "'$_filename' is not in local cache; trying smt-build"
+     wget -P $_cache $_ftpmirror/$_filename >/dev/null
+     if [ $? != 0 ]; then
+       echo "Could not download from smt-build; trying google"
+       wget -P $_cache $_google/$_filename >/dev/null
+       if [ $? != 0 ]; then
+         echo "Cannot obtain '$_filename'; exiting."
+         sourced_exit
+       fi
+     fi
+  fi
+
+  MYNDK_NDKDIR=android-ndk-$MYNDK_REVISION
+  MYNDK_NDKNAME=$_ndkname
+  MYNDK_FILENAME=$_filename
+
+  MYNDK_BINFQPN=$_cache/$_filename
+
+
+  rvb_trace_out
+}
+
+
+rvb_cmdline_register_params_handler myndk_process_params
+
+rvb_cmdline_register_option_handler "--host"   myndk_option__host
+##########rvb_cmdline_register_option_handler "--target" myndk_option__target
+
+rvb_cmdline_process_args "$@"
+myndk_validate_params
+
+
+# create local NDK cache, if necessary
+if [ ! -d $HOME/.myndk ]; then
+  mkdir -p $HOME/.myndk
+fi
+
+
+# verify the NDK archive exists
+if [ ! -e "$MYNDK_BINFQPN" ]; then
+   echo "Cannot find '$MYNDK_BINFQPN'; exiting."
+   read -n 1
+   return
+fi
+
+# expand the NDK in $PWD, if necessary
+if [ -d $MYNDK_NDKNAME ]; then
+   echo "Destination already exists; just updating path and \$NDK."
+else
+  echo "Decompressing '$MYNDK_FILENAME'..."
+  chmod u+x $MYNDK_BINFQPN
+  $MYNDK_BINFQPN >/dev/null
+
+  # possibly need to rename MYNDK_NDKDIR to MYNDK_NDKNAME
+  if [ "$MYNDK_NDKDIR" != "$MYNDK_NDKNAME" ]; then
+    mv $MYNDK_NDKDIR $MYNDK_NDKNAME
+  fi
+fi
+
+# scan $PATH for redundant, possibly wrong entries
+CULLED=
+NEWPATH=
+OLDPATH=`echo $PATH | sed 's/:/ /g'`
+for DIR in $OLDPATH; do
+   if [[ $DIR != *android-ndk* ]] && [[ $DIR != *android-sdk* ]]; then
+      NEWPATH=${NEWPATH}:$DIR
+   else
+      CULLED=1
+   fi
+done
+if [ ! -z $CULLED ]; then
+   echo "Redundant entries culled from \$PATH."
+fi
+
+echo "Initializing environment..."
+export SDK=~/android/android-sdk-linux
+export ANDROID_NDK_ROOT=$PWD/$MYNDK_NDKNAME
+export NDK=$ANDROID_NDK_ROOT
+export PATH=${NEWPATH}:$NDK:$SDK/tools:$SDK/platform-tools:$SDK/build-tools/22.0.1
+echo "Done."
+
+myndk_delete_functions ()
+{
+  local _regexp='[_]*myndk_.*'
+
+  local _funcs=`rvb_get_functions $_regexp`
+  _funcs=($_funcs) # array-ize
+  for _func in ${_funcs[@]}; do
+    unset -f $_func
+  done
+}
+
+myndk_delete_functions
+rvb_delete_functions
+set +o nounset
+
+
